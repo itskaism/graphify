@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
+import stat
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
@@ -2314,7 +2316,20 @@ def _extract_generic(
 
     try:
         parser = Parser(language)
-        source = path.read_bytes() if source_override is None else source_override
+        if source_override is None:
+            # Only regular files may be read. A repository can contain named
+            # pipes, sockets and device nodes, and `clone <github-url>` exists
+            # to point the extractor at trees the operator did not write.
+            # read_bytes() on a FIFO with no writer BLOCKS FOREVER — it never
+            # raises, so the except below cannot help and the whole run hangs
+            # with no output. stat follows symlinks on purpose: a link that
+            # points at a FIFO blocks exactly like the FIFO itself.
+            if not stat.S_ISREG(os.stat(path).st_mode):
+                return {"nodes": [], "edges": [],
+                        "error": f"not a regular file: {path}"}
+            source = path.read_bytes()
+        else:
+            source = source_override
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

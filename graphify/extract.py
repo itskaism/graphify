@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import re
+import stat
 import sys
 import textwrap
 from collections import Counter
@@ -5746,6 +5747,29 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     def _ignored(p: Path) -> bool:
         return bool(patterns and _is_ignored(p, ignore_root, patterns, _cache=ignore_cache))
 
+    def _is_parsable(p: Path) -> bool:
+        """Reject anything that is not a regular file.
+
+        A repository may contain named pipes, sockets and device nodes, and a
+        source suffix on one of them is enough to reach the extractor:
+
+          * ``open()`` on a FIFO with no writer blocks forever, so a single
+            ``pipe.py`` hangs the whole run with no output and no timeout
+          * ``open()`` on a unix socket raises ``ENXIO``
+
+        ``clone <github-url>`` exists to point the extractor at repositories
+        the operator did not write, and ``watch`` reruns this walk silently, so
+        the check belongs here rather than at each read site.
+
+        ``stat`` follows symlinks deliberately: a link that *points at* a FIFO
+        blocks exactly like the FIFO does. A broken link, or one whose target
+        cannot be stat'ed, is skipped rather than raising.
+        """
+        try:
+            return stat.S_ISREG(os.stat(p).st_mode)
+        except OSError:
+            return False
+
     if not follow_symlinks:
         # The old rglob filter rejected paths with a noise component anywhere,
         # including components of target itself — preserve that.
@@ -5766,7 +5790,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             for fname in filenames:
                 p = dp / fname
                 suffix = p.suffix
-                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root) and _is_parsable(p):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -5787,7 +5811,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         for fname in filenames:
             p = dp / fname
             suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root) and _is_parsable(p):
                 results.append(p)
     return sorted(results)
 
